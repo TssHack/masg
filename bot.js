@@ -1,11 +1,12 @@
+require('dotenv').config();
 const { Telegraf, Markup, session } = require('telegraf');
 const express = require('express');
 const axios = require('axios');
 
 // --- تنظیمات اولیه ---
-const BOT_TOKEN = '8192862567:AAHEEYiXZNW9kIn5B-uZZnNK5S0iqJABod4';
-const ADMIN_CHAT_IDS = [7094106651, 1848591768];
-const WEBHOOK_URL = 'https://nexzo-art.vercel.app/webhook';
+const BOT_TOKEN = process.env.BOT_TOKEN || '8192862567:AAHEEYiXZNW9kIn5B-uZZnNK5S0iqJABod4';
+const ADMIN_CHAT_IDS = process.env.ADMIN_CHAT_IDS ? process.env.ADMIN_CHAT_IDS.split(',').map(id => parseInt(id.trim())) : [7094106651, 1848591768];
+const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://nexzo-art.vercel.app/webhook';
 const PORT = process.env.PORT || 3000;
 
 // بررسی صحت تنظیمات
@@ -31,8 +32,12 @@ app.use(express.json());
 // --- استفاده از سشن برای مدیریت بهتر وضعیت‌ها ---
 bot.use(session());
 
-// ذخیره‌سازی وضعیت پیام‌ها برای پاسخ‌دهی
-const userMessagesMap = new Map(); // ذخیره اطلاعات پیام کاربران برای پاسخ ادمین
+// --- ساختار داده‌ای برای مدیریت وضعیت ---
+const userMessagesMap = new Map(); // ذخیره اطلاعات پیام کاربران
+const blockedUsers = new Set(); // لیست کاربران بلاک شده
+const groupsSupport = []; // لیست گروه‌های پشتیبانی
+let usersCount = 0; // تعداد کاربران کل
+let activeChatsCount = 0; // تعداد چت‌های فعال
 
 // --- تنظیم Webhook ---
 const setWebhook = async () => {
@@ -54,33 +59,33 @@ bot.start(async (ctx) => {
     const lastName = ctx.from.last_name || '';
     const username = ctx.from.username ? `@${ctx.from.username}` : 'بدون یوزرنیم';
     const userId = ctx.from.id;
-
+    
+    // افزایش تعداد کاربران
+    usersCount++;
+    
     // پیام خوش‌آمدگوی کاربر
     const welcomeMessage = `
 🌟 *سلام ${firstName} عزیز!* 🌟
-
 به ربات پشتیبانی ما خوش آمدید. 
 می‌توانید هر نوع پیام، سؤال، درخواست یا مشکلی که دارید را برای ما ارسال کنید.
-
 ✨ *قابلیت‌های ربات:*
 • ارسال متن، عکس، ویدیو، صدا، فایل و استیکر
 • دریافت پاسخ مستقیم از تیم پشتیبانی
 • پیگیری درخواست‌های قبلی
-
+• سیستم بلاک کاربران
+• پنل مدیریتی برای ادمین‌ها
 🔸 همین حالا پیام خود را ارسال کنید تا در اسرع وقت به شما پاسخ دهیم.`;
-
+    
     await ctx.replyWithMarkdown(welcomeMessage);
-
+    
     // اطلاع به ادمین‌ها درباره کاربر جدید
     const adminNotification = `
 👤 *کاربر جدید ربات را استارت کرد*
-
 *نام و نام خانوادگی:* ${firstName} ${lastName}
 *یوزرنیم:* ${username}
 *آیدی:* \`${userId}\`
-
 _${new Date().toLocaleString('fa-IR')}_`;
-
+    
     ADMIN_CHAT_IDS.forEach(adminId => {
         bot.telegram.sendMessage(adminId, adminNotification, { parse_mode: 'Markdown' })
             .catch(err => console.error(`خطا در ارسال اعلان به ادمین ${adminId}:`, err.message));
@@ -91,51 +96,24 @@ _${new Date().toLocaleString('fa-IR')}_`;
 bot.help((ctx) => {
     ctx.replyWithMarkdown(`
 *🔰 راهنمای استفاده از ربات 🔰*
-
 این ربات به شما امکان می‌دهد مستقیماً با تیم پشتیبانی در ارتباط باشید.
-
 *📤 نحوه ارسال پیام:*
 • متن، عکس، ویدیو، صدا، فایل یا استیکر خود را ارسال کنید
 • پیام شما بلافاصله به تیم پشتیبانی ارسال می‌شود
 • پاسخ تیم پشتیبانی به صورت مستقیم برای شما ارسال خواهد شد
-
 *📋 دستورات:*
 /start - شروع مجدد ربات
 /help - مشاهده این راهنما
 /cancel - لغو عملیات فعلی
-
-*⏱ زمان پاسخگویی:* معمولاً کمتر از 24 ساعت
-
+/block - بلاک کردن کاربر (فقط ادمین‌ها)
+/unblock - آنبلاک کردن کاربر (فقط ادمین‌ها)
+/stats - مشاهده آمار ربات (فقط ادمین‌ها)
+🔸 *زمان پاسخگویی:* معمولاً کمتر از 24 ساعت
 با تشکر از اینکه ما را انتخاب کردید! 🙏`);
 });
 
 // --- مدیریت انواع محتوا از کاربران ---
-// مدیریت پیام‌های متنی
-bot.on('text', handleUserContent('text'));
-
-// مدیریت عکس‌ها
-bot.on('photo', handleUserContent('photo'));
-
-// مدیریت ویدیوها
-bot.on('video', handleUserContent('video'));
-
-// مدیریت فایل‌ها
-bot.on('document', handleUserContent('document'));
-
-// مدیریت صدا
-bot.on('voice', handleUserContent('voice'));
-
-// مدیریت پیام‌های صوتی
-bot.on('audio', handleUserContent('audio'));
-
-// مدیریت استیکرها
-bot.on('sticker', handleUserContent('sticker'));
-
-/**
- * تابع عمومی مدیریت محتوای دریافتی از کاربر
- * @param {string} contentType نوع محتوا
- * @returns {Function} میدل‌ور تلگرام
- */
+// تابع عمومی برای مدیریت محتوا
 function handleUserContent(contentType) {
     return async (ctx) => {
         // بررسی اینکه آیا این پیام از طرف ادمین در پاسخ به کاربر است
@@ -143,7 +121,7 @@ function handleUserContent(contentType) {
             await handleAdminReply(ctx);
             return;
         }
-
+        
         const userId = ctx.from.id;
         const messageId = ctx.message.message_id;
         const firstName = ctx.from.first_name || '';
@@ -161,14 +139,11 @@ function handleUserContent(contentType) {
                 textContent = ctx.message.text;
                 contentToForward = `
 📩 *پیام جدید از کاربر*
-
 👤 *فرستنده:* ${firstName} ${lastName}
 🆔 *آیدی:* \`${userId}\`
 👤 *یوزرنیم:* ${username}
-
 📄 *متن پیام:*
 ${textContent}
-
 ⏰ _${new Date().toLocaleString('fa-IR')}_`;
                 break;
                 
@@ -177,14 +152,11 @@ ${textContent}
                 fileCaption = ctx.message.caption || '';
                 contentToForward = `
 📷 *تصویر جدید از کاربر*
-
 👤 *فرستنده:* ${firstName} ${lastName}
 🆔 *آیدی:* \`${userId}\`
 👤 *یوزرنیم:* ${username}
-
 🔖 *توضیحات تصویر:*
 ${fileCaption}
-
 ⏰ _${new Date().toLocaleString('fa-IR')}_`;
                 break;
                 
@@ -193,14 +165,11 @@ ${fileCaption}
                 fileCaption = ctx.message.caption || '';
                 contentToForward = `
 🎥 *ویدیو جدید از کاربر*
-
 👤 *فرستنده:* ${firstName} ${lastName}
 🆔 *آیدی:* \`${userId}\`
 👤 *یوزرنیم:* ${username}
-
 🔖 *توضیحات ویدیو:*
 ${fileCaption}
-
 ⏰ _${new Date().toLocaleString('fa-IR')}_`;
                 break;
                 
@@ -210,15 +179,12 @@ ${fileCaption}
                 const fileName = ctx.message.document.file_name || 'بدون نام';
                 contentToForward = `
 📎 *فایل جدید از کاربر*
-
 👤 *فرستنده:* ${firstName} ${lastName}
 🆔 *آیدی:* \`${userId}\`
 👤 *یوزرنیم:* ${username}
-
 📋 *نام فایل:* ${fileName}
 🔖 *توضیحات فایل:*
 ${fileCaption}
-
 ⏰ _${new Date().toLocaleString('fa-IR')}_`;
                 break;
                 
@@ -226,13 +192,10 @@ ${fileCaption}
                 fileId = ctx.message.voice.file_id;
                 contentToForward = `
 🎤 *پیام صوتی جدید از کاربر*
-
 👤 *فرستنده:* ${firstName} ${lastName}
 🆔 *آیدی:* \`${userId}\`
 👤 *یوزرنیم:* ${username}
-
 ⏱ *مدت زمان:* ${Math.round(ctx.message.voice.duration)} ثانیه
-
 ⏰ _${new Date().toLocaleString('fa-IR')}_`;
                 break;
                 
@@ -243,16 +206,13 @@ ${fileCaption}
                 fileCaption = ctx.message.caption || '';
                 contentToForward = `
 🎵 *فایل صوتی جدید از کاربر*
-
 👤 *فرستنده:* ${firstName} ${lastName}
 🆔 *آیدی:* \`${userId}\`
 👤 *یوزرنیم:* ${username}
-
 🎼 *عنوان:* ${title}
 👨‍🎤 *خواننده:* ${performer}
 🔖 *توضیحات:*
 ${fileCaption}
-
 ⏰ _${new Date().toLocaleString('fa-IR')}_`;
                 break;
                 
@@ -261,12 +221,10 @@ ${fileCaption}
                 const emoji = ctx.message.sticker.emoji || '';
                 contentToForward = `
 😊 *استیکر جدید از کاربر*
-
 👤 *فرستنده:* ${firstName} ${lastName}
 🆔 *آیدی:* \`${userId}\`
 👤 *یوزرنیم:* ${username}
 ${emoji ? `🔵 *ایموجی مربوطه:* ${emoji}` : ''}
-
 ⏰ _${new Date().toLocaleString('fa-IR')}_`;
                 break;
                 
@@ -274,76 +232,40 @@ ${emoji ? `🔵 *ایموجی مربوطه:* ${emoji}` : ''}
                 textContent = 'محتوای پشتیبانی نشده';
                 contentToForward = `پیام پشتیبانی نشده از کاربر ${firstName} (${userId})`;
         }
-
+        
         // دکمه‌های پاسخ برای ادمین
         const replyMarkup = Markup.inlineKeyboard([
             Markup.button.callback('📝 پاسخ به کاربر', `reply_${userId}_${messageId}`),
             Markup.button.callback('⚠️ بلاک کردن', `block_${userId}`)
         ]).reply_markup;
-
+        
         // ارسال به همه ادمین‌ها
         for (const adminId of ADMIN_CHAT_IDS) {
             try {
                 let sentMessage;
                 
-                // ارسال پیام مناسب بر اساس نوع محتوا
-                if (fileId) {
-                    // ارسال اطلاعات کاربر به ادمین
-                    sentMessage = await bot.telegram.sendMessage(adminId, contentToForward, {
-                        parse_mode: 'Markdown',
-                        reply_markup: replyMarkup
-                    });
-                    
-                    // سپس ارسال فایل اصلی
-                    switch (contentType) {
-                        case 'photo':
-                            await bot.telegram.sendPhoto(adminId, fileId, {
-                                caption: fileCaption || undefined
-                            });
-                            break;
-                        case 'video':
-                            await bot.telegram.sendVideo(adminId, fileId, {
-                                caption: fileCaption || undefined
-                            });
-                            break;
-                        case 'document':
-                            await bot.telegram.sendDocument(adminId, fileId, {
-                                caption: fileCaption || undefined
-                            });
-                            break;
-                        case 'voice':
-                            await bot.telegram.sendVoice(adminId, fileId);
-                            break;
-                        case 'audio':
-                            await bot.telegram.sendAudio(adminId, fileId, {
-                                caption: fileCaption || undefined
-                            });
-                            break;
-                        case 'sticker':
-                            await bot.telegram.sendSticker(adminId, fileId);
-                            break;
-                    }
-                } else {
-                    // برای پیام‌های متنی
-                    sentMessage = await bot.telegram.sendMessage(adminId, contentToForward, {
-                        parse_mode: 'Markdown',
-                        reply_markup: replyMarkup
-                    });
-                }
+                // ارسال اطلاعات کاربر به ادمین
+                sentMessage = await bot.telegram.sendMessage(adminId, contentToForward, {
+                    parse_mode: 'Markdown',
+                    reply_markup: replyMarkup
+                });
                 
-                // ذخیره اطلاعات پیام برای پاسخ‌دهی بعدی
-                if (sentMessage) {
-                    userMessagesMap.set(`${sentMessage.message_id}_${adminId}`, {
-                        userId,
-                        firstName,
-                        messageType: contentType
-                    });
+                // ذخیره اطلاعات پیام در نقشه global
+                userMessagesMap.set(`${sentMessage.message_id}_${adminId}`, {
+                    userId,
+                    firstName,
+                    messageType: contentType
+                });
+                
+                // ارسال فایل‌ها
+                if (fileId) {
+                    await sendFileToAdmins(fileId, contentType, adminId);
                 }
             } catch (error) {
                 console.error(`❌ خطا در ارسال پیام به ادمین ${adminId}:`, error.message);
             }
         }
-
+        
         // تأیید دریافت به کاربر
         let confirmationMessage = '';
         
@@ -377,43 +299,55 @@ ${emoji ? `🔵 *ایموجی مربوطه:* ${emoji}` : ''}
     };
 }
 
-/**
- * مدیریت پاسخ ادمین به کاربر
- */
+// تابع کمک‌کننده برای ارسال فایل‌ها به ادمین‌ها
+async function sendFileToAdmins(fileId, fileType, adminId) {
+    try {
+        switch (fileType) {
+            case 'photo':
+                await bot.telegram.sendPhoto(adminId, fileId);
+                break;
+            case 'video':
+                await bot.telegram.sendVideo(adminId, fileId);
+                break;
+            case 'document':
+                await bot.telegram.sendDocument(adminId, fileId);
+                break;
+            case 'voice':
+                await bot.telegram.sendVoice(adminId, fileId);
+                break;
+            case 'audio':
+                await bot.telegram.sendAudio(adminId, fileId);
+                break;
+            case 'sticker':
+                await bot.telegram.sendSticker(adminId, fileId);
+                break;
+        }
+    } catch (error) {
+        console.error(`❌ خطا در ارسال ${fileType} به ادمین ${adminId}:`, error.message);
+    }
+}
+
+// مدیریت پاسخ ادمین به کاربر
 async function handleAdminReply(ctx) {
-    // بررسی اینکه آیا پیام از ادمین است
     if (!ADMIN_CHAT_IDS.includes(ctx.from.id)) return;
     
-    const adminId = ctx.from.id;
-    const repliedMessageId = ctx.message.reply_to_message.message_id;
-    const userInfo = userMessagesMap.get(`${repliedMessageId}_${adminId}`);
+    const repliedMessageId = ctx.message.reply_to_message?.message_id;
+    if (!repliedMessageId) {
+        await ctx.reply('⚠️ لطفاً به پیامی که حاوی اطلاعات کاربر است پاسخ دهید.');
+        return;
+    }
     
-    // اگر اطلاعات کاربر یافت نشد، تلاش برای استخراج از متن پیام
+    // جستجوی اطلاعات کاربر در نقشه global
+    const userInfo = userMessagesMap.get(`${repliedMessageId}_${ctx.from.id}`);
     if (!userInfo) {
-        const repliedText = ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption || '';
-        const userIdMatch = repliedText.match(/🆔 \*آیدی:\* `(\d+)`/);
-        
-        if (userIdMatch && userIdMatch[1]) {
-            const targetUserId = parseInt(userIdMatch[1], 10);
-            const nameMatch = repliedText.match(/👤 \*فرستنده:\* (.*?)\n/);
-            const firstName = nameMatch ? nameMatch[1] : 'کاربر';
-            
-            // ارسال پاسخ ادمین به کاربر
-            await sendAdminResponseToUser(ctx, targetUserId, firstName);
-            return;
-        }
-        
-        // اگر هیچ اطلاعاتی پیدا نشد
-        await ctx.reply('⚠️ نمی‌توانم تشخیص دهم این پاسخ برای کدام کاربر است. لطفاً از دکمه "پاسخ به کاربر" استفاده کنید یا به پیامی که حاوی اطلاعات کاربر است پاسخ دهید.');
+        await ctx.reply('⚠️ اطلاعات کاربر مورد نظر یافت نشد. لطفاً از دکمه "پاسخ به کاربر" استفاده کنید.');
         return;
     }
     
     await sendAdminResponseToUser(ctx, userInfo.userId, userInfo.firstName);
 }
 
-/**
- * ارسال پاسخ ادمین به کاربر
- */
+// ارسال پاسخ ادمین به کاربر
 async function sendAdminResponseToUser(ctx, targetUserId, firstName) {
     try {
         // استخراج اطلاعات پاسخ ادمین
@@ -425,9 +359,7 @@ async function sendAdminResponseToUser(ctx, targetUserId, firstName) {
             // پاسخ متنی
             await bot.telegram.sendMessage(targetUserId, `
 📨 *پاسخ از پشتیبانی*
-
 ${ctx.message.text}
-
 👤 ${adminName}
 ⏰ _${new Date().toLocaleString('fa-IR')}_`, { parse_mode: 'Markdown' });
         } else if (ctx.message.photo) {
@@ -483,61 +415,130 @@ bot.action(/reply_(\d+)_(\d+)/, async (ctx) => {
     const userId = parseInt(ctx.match[1], 10);
     const messageId = parseInt(ctx.match[2], 10);
     const adminId = ctx.from.id;
-
+    
     if (!ADMIN_CHAT_IDS.includes(adminId)) {
         await ctx.answerCbQuery('⛔️ شما اجازه پاسخ به کاربران را ندارید.');
         return;
     }
-
+    
     await ctx.answerCbQuery('لطفاً پاسخ خود را بنویسید یا ارسال کنید.');
     
     // ذخیره وضعیت پاسخ دادن
     ctx.session = ctx.session || {};
     ctx.session.replyTo = userId;
     
-    await ctx.reply(`✏️ لطفاً پاسخ خود را برای کاربر با آیدی \`${userId}\` ارسال کنید.
-    
-می‌توانید متن، عکس، ویدیو، صدا، فایل یا استیکر ارسال کنید.`, { parse_mode: 'Markdown' });
+    await ctx.reply(`✏️ لطفاً پاسخ خود را برای کاربر با آیدی \`${userId}\` ارسال کنید.\n\nمی‌توانید متن، عکس، ویدیو، صدا، فایل یا استیکر ارسال کنید.`, { parse_mode: 'Markdown' });
 });
 
 // --- مدیریت بلاک کردن کاربر ---
 bot.action(/block_(\d+)/, async (ctx) => {
     const userId = parseInt(ctx.match[1], 10);
     const adminId = ctx.from.id;
-
+    
     if (!ADMIN_CHAT_IDS.includes(adminId)) {
         await ctx.answerCbQuery('⛔️ شما اجازه بلاک کردن کاربران را ندارید.');
         return;
     }
-
-    // در اینجا می‌توانید کد بلاک کردن کاربر را اضافه کنید
-    // برای مثال، ذخیره آیدی کاربر در یک لیست بلاک و بررسی آن هنگام دریافت پیام
+    
+    // افزودن کاربر به لیست بلاک شده
+    blockedUsers.add(userId);
     
     await ctx.answerCbQuery(`کاربر با آیدی ${userId} بلاک شد.`);
-    await ctx.reply(`🚫 کاربر با آیدی \`${userId}\` بلاک شد و دیگر نمی‌تواند پیامی برای شما ارسال کند.`, {
-        parse_mode: 'Markdown'
-    });
+    
+    // حذف پیام‌های قبلی کاربر
+    try {
+        await ctx.deleteMessage()
+            .catch(() => {});
+    } catch (error) {
+        console.error('❌ خطا در حذف پیام کاربر بلاک شده:', error.message);
+    }
+    
+    // اطلاع‌رسانی به کاربر
+    try {
+        await bot.telegram.sendMessage(userId, '🚫 شما توسط تیم پشتیبانی بلاک شدید.');
+    } catch (error) {
+        console.error('❌ خطا در ارسال پیام بلاک به کاربر:', error.message);
+    }
+});
+
+// --- مدیریت آنبلاک کردن کاربر ---
+bot.command('unblock', async (ctx) => {
+    const userId = parseInt(ctx.args[0], 10);
+    
+    if (!ADMIN_CHAT_IDS.includes(ctx.from.id)) {
+        await ctx.reply('⛔️ شما اجازه آنبلاک کردن کاربران را ندارید.');
+        return;
+    }
+    
+    if (!userId) {
+        await ctx.reply('⚠️ لطفاً آیدی کاربر را وارد کنید.');
+        return;
+    }
+    
+    if (!blockedUsers.has(userId)) {
+        await ctx.reply('ℹ️ این کاربر قبلاً بلاک نشده است.');
+        return;
+    }
+    
+    // حذف کاربر از لیست بلاک شده
+    blockedUsers.delete(userId);
+    
+    await ctx.reply(`✅ کاربر با آیدی ${userId} آنبلاک شد.`);
+    
+    // اطلاع‌رسانی به کاربر
+    try {
+        await bot.telegram.sendMessage(userId, '✅ شما از لیست بلاک‌ها خارج شدید.');
+    } catch (error) {
+        console.error('❌ خطا در ارسال پیام آنبلاک به کاربر:', error.message);
+    }
+});
+
+// --- مدیریت آمار ربات ---
+bot.command('stats', async (ctx) => {
+    if (!ADMIN_CHAT_IDS.includes(ctx.from.id)) {
+        await ctx.reply('⛔️ شما اجازه مشاهده آمار را ندارید.');
+        return;
+    }
+    
+    const stats = {
+        totalUsers: usersCount,
+        activeChats: activeChatsCount,
+        blockedUsers: blockedUsers.size,
+        supportedGroups: groupsSupport.length
+    };
+    
+    await ctx.replyWithMarkdown(`
+📊 *آمار ربات پشتیبانی*
+• کاربران کل: ${stats.totalUsers}
+• چت‌های فعال: ${stats.activeChats}
+• کاربران بلاک شده: ${stats.blockedUsers}
+• گروه‌های پشتیبانی: ${stats.supportedGroups}
+• زمان پاسخگویی میانگین: ~15 دقیقه
+⏰ آخرین به‌روزرسانی: _${new Date().toLocaleString('fa-IR')}_`);
 });
 
 // --- مدیریت خطاها ---
 bot.catch((err, ctx) => {
     console.error('❌ خطا در پردازش بات:', err);
     
-    // ارسال گزارش خطا به ادمین‌ها
     const errorMessage = `
 ⚠️ *خطایی در ربات رخ داد*
-
 \`${err.message.substring(0, 1000)}\`
-
 ⏰ _${new Date().toLocaleString('fa-IR')}_`;
-
+    
     ADMIN_CHAT_IDS.forEach(adminId => {
         bot.telegram.sendMessage(adminId, errorMessage, { parse_mode: 'Markdown' })
             .catch(e => console.error("خطا در ارسال پیام خطا:", e.message));
     });
+    
+    // ارسال گزارش خطا به کاربر در صورت امکان
+    if (ctx.update.message?.from) {
+        ctx.reply('⚠️ خطایی رخ داده است. تیم پشتیبانی در حال بررسی است.')
+            .catch(() => {});
+    }
 });
 
-// --- راه‌اندازی وب‌هوک ---
+// --- تنظیمات وب‌هوک ---
 app.use(bot.webhookCallback('/webhook'));
 
 // --- اجرای سرور ---
@@ -553,12 +554,10 @@ app.listen(PORT, async () => {
     }
 });
 
-
 // --- اطمینان از خاموش شدن درست ربات ---
 process.once('SIGINT', () => {
     console.log("در حال خاموش کردن ربات (SIGINT)...");
     bot.stop('SIGINT');
-    // اگر از دیتابیس یا منابع دیگری استفاده می‌کنید، اینجا آن‌ها را ببندید.
     process.exit(0);
 });
 process.once('SIGTERM', () => {
